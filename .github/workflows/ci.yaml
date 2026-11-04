@@ -19,6 +19,15 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 30
+    env:
+      OBOT_AUTHENTIK_TEST_POSTGRES_DSN: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,7 +35,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - run: go test -race -cover ./...
+      - run: go test -race -cover -v ./... 2>&1 | tee test.log
+      - name: Check the Postgres group store was tested
+        run: '! grep -q "SKIP: TestStore.*/postgres" test.log'
 
   lint:
     runs-on: ubuntu-24.04

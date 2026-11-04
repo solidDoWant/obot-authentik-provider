@@ -1,37 +1,31 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/solidDoWant/obot-authentik-provider/pkg/client"
+	"github.com/solidDoWant/obot-authentik-provider/pkg/groups"
 )
 
-func TestMembershipHandlerUnavailableIs403NotUnsupported404(t *testing.T) {
-	for name, users := range map[string][]map[string]any{
-		"missing":     {},
-		"deactivated": {{"uuid": testUserUUID, "is_active": false, "groups": []string{}}},
+func TestMembershipHandlerReturnsSavedGroups(t *testing.T) {
+	store := groups.NewMemory()
+	saved := []groups.Group{{ID: "22222222-2222-4222-8222-222222222222", Name: "engineering"}}
+	if err := store.SetUserGroups(t.Context(), testUserUUID, saved, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	s := server{store: store}
+	for user, want := range map[string]string{
+		testUserUUID: `[{"id":"authentik/22222222-2222-4222-8222-222222222222","name":"engineering"}]`,
+		"unknown":    `[]`,
 	} {
-		t.Run(name, func(t *testing.T) {
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/core/users/" || r.URL.Query().Get("uuid") != testUserUUID {
-					t.Errorf("request %s", r.URL)
-				}
-				if err := json.NewEncoder(w).Encode(map[string]any{"results": users}); err != nil {
-					t.Error(err)
-				}
-			}))
-			defer upstream.Close()
-			s := server{directory: client.New(upstream.URL, "token", upstream.Client())}
-			response := httptest.NewRecorder()
-			s.listUserGroups(response, httptest.NewRequest(http.MethodPost, "/obot-list-user-auth-groups", strings.NewReader(testUserUUID+"\n")))
-			if response.Code != http.StatusForbidden {
-				t.Fatalf("status %d body %s", response.Code, response.Body.String())
-			}
-		})
+		response := httptest.NewRecorder()
+		s.listUserGroups(response, httptest.NewRequest(http.MethodPost, "/obot-list-user-auth-groups", strings.NewReader(user+"\n")))
+		if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != want {
+			t.Fatalf("%s: status %d body %s, want %s", user, response.Code, response.Body.String(), want)
+		}
 	}
 }
 

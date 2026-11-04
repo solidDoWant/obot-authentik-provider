@@ -18,10 +18,12 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/providers"
 	"github.com/obot-platform/providers/auth-providers-common/pkg/env"
 	"github.com/obot-platform/providers/auth-providers-common/pkg/state"
+	"github.com/solidDoWant/obot-authentik-provider/pkg/groups"
 )
 
 const (
 	testUserUUID  = "0c6f5c8e-3d1b-4a52-9f0e-6b7d2a1c4e93"
+	testGroupUUID = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
 	hashedSubject = "5d41402abc4b2a76b9719d911017c592ae8f1f5e7d1b2c3a4f5e6d7c8b9a0f1e"
 )
 
@@ -36,7 +38,7 @@ func TestOIDCEmailAdmissionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// authentik's default subject is a hash that the API can't look up, so only UUID subjects are admitted.
+	// Any subject mode works, including authentik's default hashed ID.
 	for _, subject := range []string{testUserUUID, hashedSubject} {
 		for _, policy := range []string{"", "false", "true"} {
 			for _, verification := range []string{"missing", "false", "true", "malformed"} {
@@ -66,7 +68,7 @@ func TestOIDCEmailAdmissionPolicy(t *testing.T) {
 							}
 						}))
 						defer upstream.Close()
-						claims = map[string]any{"iss": upstream.URL + "/application/o/test/", "sub": subject, "aud": "test-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "preferred_username": "person", "groups": []string{}}
+						claims = map[string]any{"obot_groups": []map[string]string{{"id": testGroupUUID, "name": "engineering"}}, "iss": upstream.URL + "/application/o/test/", "sub": subject, "aud": "test-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "preferred_username": "person", "groups": []string{}}
 						if email != "" {
 							claims["email"] = email
 						}
@@ -130,6 +132,7 @@ func TestOIDCEmailAdmissionPolicy(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
+						store := groups.NewMemory()
 						stateStatus := func() int {
 							request := httptest.NewRequest(http.MethodGet, "https://obot.example/", nil)
 							saved := httptest.NewRecorder()
@@ -144,16 +147,23 @@ func TestOIDCEmailAdmissionPolicy(t *testing.T) {
 								t.Fatal(err)
 							}
 							response := httptest.NewRecorder()
-							verifiedStateHandler(proxy, policy == "true")(response, httptest.NewRequest(http.MethodPost, "/obot-get-state", bytes.NewReader(body)))
+							verifiedStateHandler(proxy, policy == "true", groups.NewRecorder(store))(response, httptest.NewRequest(http.MethodPost, "/obot-get-state", bytes.NewReader(body)))
 							return response.Code
 						}
 						code := stateStatus()
 						want := http.StatusOK
-						if subject != testUserUUID || policy != "true" && verification != "true" {
+						if policy != "true" && verification != "true" {
 							want = http.StatusUnauthorized
 						}
 						if code != want {
 							t.Fatalf("state admission HTTP %d, want %d", code, want)
+						}
+						saved, err := store.UserGroups(t.Context(), subject)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if wantSaved := code == http.StatusOK; wantSaved != (len(saved) == 1 && saved[0].ID == "authentik/"+testGroupUUID) {
+							t.Fatalf("saved groups %v after HTTP %d", saved, code)
 						}
 						if verification == "true" {
 							for _, next := range []string{"missing", "false", "true"} {
@@ -179,7 +189,7 @@ func TestOIDCEmailAdmissionPolicy(t *testing.T) {
 								session.RefreshToken = "refresh"
 								status := stateStatus()
 								want := http.StatusOK
-								if subject != testUserUUID || policy != "true" && next != "true" {
+								if policy != "true" && next != "true" {
 									want = http.StatusUnauthorized
 								}
 								if status != want {
@@ -215,7 +225,6 @@ func TestEmailPolicyEnvironmentDefaultAndInvalidValue(t *testing.T) {
 		"OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_ID":                       "test-client",
 		"OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_SECRET":                   "test-secret",
 		"OBOT_AUTHENTIK_AUTH_PROVIDER_ISSUER_URL":                      "https://auth.example/application/o/test/",
-		"OBOT_AUTHENTIK_AUTH_PROVIDER_API_TOKEN":                       "api-token",
 		"OBOT_SERVER_PUBLIC_URL":                                       "https://obot.example",
 		"OBOT_AUTH_PROVIDER_COOKIE_SECRET":                             testOptions().AuthCookieSecret,
 		"OBOT_AUTHENTIK_AUTH_PROVIDER_INSECURE_ALLOW_UNVERIFIED_EMAIL": "",

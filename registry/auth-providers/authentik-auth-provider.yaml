@@ -18,10 +18,6 @@ requiredConfigurationParameters:
     friendlyName: "Client Secret"
     description: "Client secret of the authentik OAuth2/OpenID provider."
     sensitive: true
-  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_API_TOKEN"
-    friendlyName: "API Token"
-    description: "API token of an authentik service account that can view users and groups."
-    sensitive: true
   - name: "OBOT_AUTH_PROVIDER_COOKIE_SECRET"
     friendlyName: "Cookie Secret"
     description: "Secret used to encrypt cookies. Must be a random string of length 16, 24, or 32."

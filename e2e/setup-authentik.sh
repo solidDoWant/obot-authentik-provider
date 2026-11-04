@@ -1,6 +1,6 @@
 #!/bin/bash
-# Configures the throwaway authentik at 127.0.0.1:9000 as the README describes, plus groups and
-# users to test with. Writes what the test needs to $E2E_DIR/env.
+# Configures the throwaway authentik at 127.0.0.1:9000 as the README describes, with the default
+# hashed subject mode, plus groups and users to test with. Writes what the test needs to $E2E_DIR/env.
 set -euo pipefail
 
 AK=http://127.0.0.1:9000/api/v3
@@ -37,14 +37,18 @@ done
 # The documented replacement for the default email mapping, which always sends email_verified: false.
 email=$(api POST /propertymappings/provider/scope/ -d "$(jq -n '{name: "obot e2e email", scope_name: "email", expression: "return {\"email\": request.user.email, \"email_verified\": True}"}')" | jq -r .pk)
 
+# The README's groups mapping: each group the user is in, directly or through a child group.
+groups_expression='return {"obot_groups": [{"id": str(group.pk), "name": group.name} for group in request.user.all_groups()]}'
+groups_mapping=$(api POST /propertymappings/provider/scope/ -d "$(jq -n --arg e "$groups_expression" '{name: "obot groups", scope_name: "obot_groups", expression: $e}')" | jq -r .pk)
+
 client_secret=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
 provider=$(api POST /providers/oauth2/ -d "$(jq -n \
     --arg af "$authz_flow" --arg if "$inval_flow" --arg sk "$signing_key" --arg cs "$client_secret" --arg cb "$CALLBACK" \
-    --arg o "$openid" --arg p "$profile" --arg e "$email" --arg off "$offline" \
+    --arg o "$openid" --arg p "$profile" --arg e "$email" --arg off "$offline" --arg g "$groups_mapping" \
     '{name: "obot", authorization_flow: $af, invalidation_flow: $if, client_type: "confidential", client_id: "obot-e2e",
       client_secret: $cs, redirect_uris: [{matching_mode: "strict", url: $cb}], signing_key: $sk,
-      grant_types: ["authorization_code", "refresh_token"],
-      sub_mode: "user_uuid", issuer_mode: "per_provider", property_mappings: [$o, $p, $e, $off]}')" | jq -r .pk)
+      grant_types: ["authorization_code", "refresh_token"], access_token_validity: "seconds=30",
+      issuer_mode: "per_provider", property_mappings: [$o, $p, $e, $off, $g]}')" | jq -r .pk)
 api POST /core/applications/ -d "$(jq -n --argjson p "$provider" '{name: "Obot", slug: "obot", provider: $p}')" >/dev/null
 
 group() {
@@ -65,27 +69,20 @@ user() {
 }
 alice=$(user alice "[\"$eng\"]")
 bob=$(user bob "[\"$ops\"]")
-
-# The service account, a role with the two global permissions, and an API token.
-svc=$(api POST /core/users/service_account/ -d '{"name": "obot-directory", "create_group": false, "expiring": false}' | jq -r .user_pk)
-role=$(api POST /rbac/roles/ -d '{"name": "obot directory reader"}' | jq -r .pk)
-api POST "/rbac/permissions/assigned_by_roles/$role/assign/" -d '{"permissions": ["authentik_core.view_user", "authentik_core.view_group"]}' >/dev/null
-api POST "/rbac/roles/$role/add_user/" -d "$(jq -n --argjson pk "$svc" '{pk: $pk}')" >/dev/null || \
-    api PATCH "/core/users/$svc/" -d "$(jq -n --arg r "$role" '{roles: [$r]}')" >/dev/null
-api POST /core/tokens/ -d "$(jq -n --argjson u "$svc" '{identifier: "obot-directory-api", intent: "api", user: $u, expiring: false}')" >/dev/null
-api_token=$(api GET /core/tokens/obot-directory-api/view_key/ | jq -r .key)
+carol=$(user carol "[\"$ops\"]")
 
 issuer=$(curl -sSf http://127.0.0.1:9000/application/o/obot/.well-known/openid-configuration | jq -r .issuer)
 cat > "$OUT" <<EOF
 PROVIDER_PK=$provider
 DEFAULT_EMAIL_MAPPING=$default_email
 CUSTOM_EMAIL_MAPPING=$email
+GROUPS_MAPPING=$groups_mapping
 ISSUER=$issuer
 CLIENT_ID=obot-e2e
 CLIENT_SECRET=$client_secret
-API_TOKEN=$api_token
 ALICE_PK=$alice
 BOB_PK=$bob
+CAROL_PK=$carol
 ENG=$eng
 OPS=$ops
 TECH=$tech

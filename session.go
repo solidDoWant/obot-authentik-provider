@@ -11,14 +11,14 @@ import (
 
 	oauth2proxy "github.com/oauth2-proxy/oauth2-proxy/v7"
 	"github.com/obot-platform/providers/auth-providers-common/pkg/state"
-	"github.com/solidDoWant/obot-authentik-provider/pkg/profile"
+	"github.com/solidDoWant/obot-authentik-provider/pkg/groups"
 )
 
-// verifiedStateHandler applies the subject and email policy before Obot consumes an
-// identity. ID tokens come only from oauth2-proxy's authenticated session store:
+// verifiedStateHandler applies the email policy and saves the user's groups before Obot consumes
+// an identity. ID tokens come only from oauth2-proxy's authenticated session store:
 // oauth2-proxy verifies their signature, issuer and audience during code exchange
 // and refresh. This is a claim policy check, not another JWT verifier.
-func verifiedStateHandler(proxy *oauth2proxy.OAuthProxy, allowUnverified bool) http.HandlerFunc {
+func verifiedStateHandler(proxy *oauth2proxy.OAuthProxy, allowUnverified bool, recorder *groups.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var serialized state.SerializableRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&serialized); err != nil {
@@ -52,19 +52,36 @@ func verifiedStateHandler(proxy *oauth2proxy.OAuthProxy, allowUnverified bool) h
 			refreshed.SetCookies = setCookies
 			current = refreshed
 		}
-		// Sign-in has already succeeded at this point, so these logs are the only record of why the user is signed out.
-		if !profile.IsUUID(current.User) {
-			// Group lookups need the user's UUID. Any other subject would sign the user in without their groups.
-			fmt.Printf("WARNING: authentik-auth-provider: rejected session for authentik subject %q: %s\n", current.User, profile.SubjectModeError)
+		if current.User == "" {
 			state.WriteStateError(w, state.ErrInvalidSession)
 			return
 		}
+		// Sign-in has already succeeded at this point, so these logs are the only record of why the user is signed out.
 		if !allowUnverified {
 			if reason := unverifiedEmailReason(current.IDToken); reason != "" {
 				fmt.Printf("WARNING: authentik-auth-provider: rejected session for authentik user %q: %s\n", current.User, reason)
 				state.WriteStateError(w, state.ErrInvalidSession)
 				return
 			}
+		}
+		// Obot looks groups up by user later, without the token, so they're saved now. A refreshed
+		// session carries current groups, so this also applies changes made in authentik.
+		userGroups, err := groups.FromIDToken(current.IDToken)
+		missing := errors.Is(err, groups.ErrNoClaim)
+		if err != nil && !missing {
+			fmt.Printf("WARNING: authentik-auth-provider: rejected session for authentik user %q: %v\n", current.User, err)
+			state.WriteStateError(w, state.ErrInvalidSession)
+			return
+		}
+		wrote, err := recorder.Record(r.Context(), current.User, userGroups)
+		if err != nil {
+			// Serving the request anyway could leave the user with groups they've been removed from.
+			fmt.Printf("ERROR: authentik-auth-provider: failed to save the groups of authentik user %q: %v\n", current.User, err)
+			http.Error(w, "failed to save the user's groups", http.StatusInternalServerError)
+			return
+		}
+		if missing && wrote {
+			fmt.Printf("WARNING: authentik-auth-provider: authentik user %q has no groups in Obot: %v\n", current.User, groups.ErrNoClaim)
 		}
 		if err := json.NewEncoder(w).Encode(current); err != nil {
 			http.Error(w, "failed to encode state", http.StatusInternalServerError)

@@ -83,34 +83,29 @@ provider=$(curl -sSf -H "$BOOTSTRAP" "$OBOT/api/auth-providers/authentik-auth-pr
 check "obot loads the provider from the image volume" test "$(jq -r .name <<<"$provider")" = authentik
 check "the provider needs no license" test "$(jq -r '.requiredEntitlements // [] | length' <<<"$provider")" = 0
 
-config=$(jq -n --arg i "$ISSUER" --arg c "$CLIENT_ID" --arg s "$CLIENT_SECRET" --arg t "$API_TOKEN" \
+# Sessions end when authentik's access token expires and can't be refreshed. setup-authentik.sh
+# makes tokens last 30 seconds, so that a deactivation takes effect within the test.
+TOKEN_SECONDS=30
+REFRESH=15
+config=$(jq -n --arg i "$ISSUER" --arg c "$CLIENT_ID" --arg s "$CLIENT_SECRET" --arg r "${REFRESH}s" \
     --arg cs "$(head -c 32 /dev/urandom | base64)" \
     '{OBOT_AUTHENTIK_AUTH_PROVIDER_ISSUER_URL: $i, OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_ID: $c,
-      OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_SECRET: $s, OBOT_AUTHENTIK_AUTH_PROVIDER_API_TOKEN: $t,
+      OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_SECRET: $s, OBOT_AUTH_PROVIDER_TOKEN_REFRESH_DURATION: $r,
       OBOT_AUTH_PROVIDER_COOKIE_SECRET: $cs, OBOT_AUTH_PROVIDER_EMAIL_DOMAINS: "*"}')
 curl -sSf -o /dev/null -X POST -H "$BOOTSTRAP" -H "Content-Type: application/json" -d "$config" \
     "$OBOT/api/auth-providers/authentik-auth-provider/configure"
 
+user_groups() {
+    curl -sSf -H "$BOOTSTRAP" "$OBOT/api/users/$1" | jq -c '.authProviderGroups // [] | sort'
+}
+group_ids() {
+    jq -nc '$ARGS.positional | map("authentik/" + .) | sort' --args "$@"
+}
+
 alice=$(./login.sh alice)
 check "alice signs in" test "$(jq -r .email <<<"$alice")" = alice@example.com
-
-groups=$(curl -sSf -H "$BOOTSTRAP" "$OBOT/api/users/$(jq -r .id <<<"$alice")" | jq -c '.authProviderGroups // [] | sort')
-want=$(jq -nc --arg a "$ENG" --arg b "$TECH" --arg c "$STAFF" --arg d "$OTHER" '[$a, $b, $c, $d] | map("authentik/" + .) | sort')
-check "alice has her group and every ancestor ($groups)" test "$groups" = "$want"
-
-found=$(curl -sSf -b "$E2E_DIR/jar-alice" "$OBOT/api/groups?name=oper" | jq -r '[.items[].name] | join(",")')
-check "group search finds operations ($found)" test "$found" = operations
-
-count=0
-cursor=
-for _ in $(seq 1 10); do
-    page=$(curl -sSf -b "$E2E_DIR/jar-alice" "$OBOT/api/groups?limit=4&cursor=$cursor")
-    count=$((count + $(jq '.items | length' <<<"$page")))
-    cursor=$(jq -r '.nextCursor // empty' <<<"$page")
-    [ -n "$cursor" ] || break
-done
-total=$(ak GET "/core/groups/?page_size=1&include_users=false" | jq .pagination.count)
-check "paging lists all $total groups ($count)" test "$count" = "$total"
+got=$(user_groups "$(jq -r .id <<<"$alice")")
+check "alice has her group and every ancestor, through both parents ($got)" test "$got" = "$(group_ids "$ENG" "$TECH" "$STAFF" "$OTHER")"
 
 provider_patch() { ak PATCH "/providers/oauth2/$PROVIDER_PK/" -d "$1" >/dev/null; }
 mappings=$(ak GET "/providers/oauth2/$PROVIDER_PK/" | jq -c .property_mappings)
@@ -120,11 +115,40 @@ provider_patch "$(jq -c --arg c "$CUSTOM_EMAIL_MAPPING" --arg d "$DEFAULT_EMAIL_
 check "authentik's default email mapping is refused" test -z "$(./login.sh bob)"
 provider_patch "{\"property_mappings\": $mappings}"
 
-provider_patch '{"sub_mode": "hashed_user_id"}'
-check "the default hashed subject is refused" test -z "$(./login.sh bob)"
-provider_patch '{"sub_mode": "user_uuid"}'
+bob=$(./login.sh bob)
+check "bob signs in once fixed" test "$(jq -r .email <<<"$bob")" = bob@example.com
+got=$(user_groups "$(jq -r .id <<<"$bob")")
+check "bob has his groups ($got)" test "$got" = "$(group_ids "$OPS" "$TECH" "$STAFF")"
 
-check "bob signs in once fixed" test "$(./login.sh bob | jq -r .email)" = bob@example.com
+provider_patch "$(jq -c --arg g "$GROUPS_MAPPING" '{property_mappings: map(select(. != $g))}' <<<"$mappings")"
+carol=$(./login.sh carol)
+check "without the groups mapping, carol signs in" test "$(jq -r .email <<<"$carol")" = carol@example.com
+got=$(user_groups "$(jq -r .id <<<"$carol")")
+check "without the groups mapping, carol has no groups ($got)" test "$got" = "[]"
+provider_patch "{\"property_mappings\": $mappings}"
+
+found=$(curl -sSf -b "$E2E_DIR/jar-alice" "$OBOT/api/groups?name=oper" | jq -r '[.items[].name] | join(",")')
+check "group search finds operations ($found)" test "$found" = operations
+
+names=()
+cursor=
+for _ in $(seq 1 10); do
+    page=$(curl -sSf -b "$E2E_DIR/jar-alice" "$OBOT/api/groups?limit=2&cursor=$cursor")
+    mapfile -t -O "${#names[@]}" names < <(jq -r '.items[].name' <<<"$page")
+    cursor=$(jq -r '.nextCursor // empty' <<<"$page")
+    [ -n "$cursor" ] || break
+done
+listed=$(printf '%s\n' "${names[@]}" | sort | paste -sd,)
+check "paging lists the groups of signed-in users ($listed)" test "$listed" = engineering,operations,other,staff,technology
+
+ak PATCH "/core/users/$BOB_PK/" -d '{"is_active": false}' >/dev/null
+sleep $((TOKEN_SECONDS + 10))
+# Signed out, obot redirects to sign in instead of returning the user.
+check "a deactivated user is signed out when their access token expires" \
+    test -z "$(curl -s -b "$E2E_DIR/jar-bob" "$OBOT/api/me" | jq -r 'select(.email) | .email' 2>/dev/null)"
+
+check "groups are kept in obot's Postgres database" \
+    test -z "$(docker logs "$OBOT_CONTAINER" 2>&1 | grep 'kept in memory')"
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures check(s) failed" >&2

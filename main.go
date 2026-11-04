@@ -1,5 +1,5 @@
-// Command authentik-auth-provider signs users in to Obot with an authentik OAuth2/OpenID provider
-// and reads their groups through authentik's API.
+// Command authentik-auth-provider signs users in to Obot with an authentik OAuth2/OpenID provider,
+// and gives Obot the authentik groups from their ID tokens.
 package main
 
 import (
@@ -20,8 +20,8 @@ import (
 	"github.com/oauth2-proxy/oauth2-proxy/v7/pkg/validation"
 	"github.com/obot-platform/enterprise-providers/authcommon"
 	"github.com/obot-platform/providers/auth-providers-common/pkg/env"
-	"github.com/obot-platform/providers/auth-providers-common/pkg/state"
 	"github.com/solidDoWant/obot-authentik-provider/pkg/client"
+	"github.com/solidDoWant/obot-authentik-provider/pkg/groups"
 	"github.com/solidDoWant/obot-authentik-provider/pkg/profile"
 )
 
@@ -40,7 +40,6 @@ type Options struct {
 	ClientID                          string `env:"OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_ID"`
 	ClientSecret                      string `env:"OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_SECRET"`
 	IssuerURL                         string `env:"OBOT_AUTHENTIK_AUTH_PROVIDER_ISSUER_URL"`
-	APIToken                          string `env:"OBOT_AUTHENTIK_AUTH_PROVIDER_API_TOKEN"`
 	ObotServerURL                     string `env:"OBOT_SERVER_PUBLIC_URL,OBOT_SERVER_URL"`
 	PostgresConnectionDSN             string `env:"OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_DSN" optional:"true"`
 	PostgresMaxConnections            int    `env:"OBOT_AUTH_PROVIDER_POSTGRES_MAX_CONNECTIONS" optional:"true"`
@@ -55,7 +54,7 @@ type Options struct {
 }
 
 type server struct {
-	directory   *client.Client
+	store       groups.Store
 	userInfoURL string
 }
 
@@ -90,11 +89,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	store, err := openStore(opts)
+	if err != nil {
+		fmt.Printf("ERROR: authentik-auth-provider: %v\n", err)
+		os.Exit(1)
+	}
+	go pruneGroups(store)
 	srv := &server{
-		directory:   client.New(endpoints.APIURL, opts.APIToken, nil),
+		store:       store,
 		userInfoURL: endpoints.UserInfoURL,
 	}
-	go checkDirectoryAccess(srv.directory)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -107,10 +111,10 @@ func main() {
 	})
 	// buildOAuthProxyOptions already rejected an invalid policy value.
 	allowUnverified, _ := allowUnverifiedEmail(opts)
-	mux.HandleFunc("/obot-get-state", verifiedStateHandler(oauthProxy, allowUnverified))
+	mux.HandleFunc("/obot-get-state", verifiedStateHandler(oauthProxy, allowUnverified, groups.NewRecorder(store)))
 	mux.HandleFunc("/obot-get-user-info", srv.getUserInfo)
-	mux.HandleFunc("/obot-list-auth-groups", authcommon.ListGroupsHandler(providerKind, srv.fetchGroupPage))
-	mux.HandleFunc("/obot-get-auth-groups", authcommon.GetGroupsHandler(providerKind, srv.fetchGroupsByIDs))
+	mux.HandleFunc("/obot-list-auth-groups", authcommon.ListGroupsHandler(providerKind, store.ListGroups))
+	mux.HandleFunc("/obot-get-auth-groups", authcommon.GetGroupsHandler(providerKind, store.GroupsByIDs))
 	mux.HandleFunc("/obot-list-user-auth-groups", srv.listUserGroups)
 	mux.HandleFunc("/", oauthProxy.ServeHTTP)
 
@@ -127,16 +131,27 @@ func main() {
 	}
 }
 
-// checkDirectoryAccess reports a broken API token at startup. It only logs: a provider that exits
-// locks every user out, while one that runs still signs them in.
-func checkDirectoryAccess(directory *client.Client) {
+// openStore keeps groups in Obot's Postgres database when Obot gives the provider one, so that
+// they survive restarts and every replica sees them, and in memory otherwise.
+func openStore(opts Options) (groups.Store, error) {
+	if opts.PostgresConnectionDSN == "" {
+		fmt.Println("WARNING: authentik-auth-provider: Obot gave the provider no Postgres database, so users' groups are kept in memory. After a restart, users have no groups until they sign in again, and replicas don't share groups.")
+		return groups.NewMemory(), nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := profile.CheckDirectoryAccess(ctx, directory); err != nil {
-		fmt.Printf("ERROR: authentik-auth-provider: directory check failed: %v. Group lookups for sign-ins will fail until this is fixed.\n", err)
-		return
+	return groups.NewPostgres(ctx, opts.PostgresConnectionDSN, opts.PostgresMaxConnections)
+}
+
+func pruneGroups(store groups.Store) {
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if err := store.Prune(ctx, time.Now().Add(-groups.Retention)); err != nil {
+			fmt.Printf("ERROR: authentik-auth-provider: %v\n", err)
+		}
+		cancel()
+		time.Sleep(time.Hour)
 	}
-	fmt.Println("authentik-auth-provider: directory access verified")
 }
 
 // allowUnverifiedEmail reads the email verification policy. Unset means verified emails are required.
@@ -177,7 +192,7 @@ func buildOAuthProxyOptions(opts Options) (*options.Options, error) {
 	legacyOpts.LegacyProvider.ClientID = opts.ClientID
 	legacyOpts.LegacyProvider.ClientSecret = opts.ClientSecret
 	legacyOpts.LegacyProvider.OIDCIssuerURL = opts.IssuerURL
-	legacyOpts.LegacyProvider.Scope = "openid email profile offline_access"
+	legacyOpts.LegacyProvider.Scope = "openid email profile offline_access " + groups.Scope
 	// oauth2-proxy would refuse an unverified email at the callback, where nothing records why. The policy is
 	// enforced and logged by verifiedStateHandler instead, which every identity Obot uses passes through.
 	legacyOpts.LegacyProvider.InsecureOIDCAllowUnverifiedEmail = true
@@ -217,16 +232,8 @@ func buildOAuthProxyOptions(opts Options) (*options.Options, error) {
 	return oauthProxyOpts, nil
 }
 
-func (s *server) fetchGroupPage(ctx context.Context, req authcommon.PageRequest) (authcommon.PageResult, error) {
-	return profile.FetchGroupPage(ctx, s.directory, req)
-}
-
-func (s *server) fetchGroupsByIDs(ctx context.Context, ids []string) (state.GroupInfoList, error) {
-	return profile.FetchGroupsByIDs(ctx, s.directory, ids)
-}
-
-// listUserGroups returns the direct groups and every ancestor of the user whose UUID is the plain
-// text request body.
+// listUserGroups returns the groups, with every ancestor, from the last ID token of the user whose
+// subject is the plain text request body.
 func (s *server) listUserGroups(w http.ResponseWriter, r *http.Request) {
 	userIDBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
 	if err != nil {
@@ -241,21 +248,13 @@ func (s *server) listUserGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	groups, err := profile.FetchUserGroupInfos(r.Context(), s.directory, userID)
+	infos, err := s.store.UserGroups(r.Context(), userID)
 	if err != nil {
-		if unavailable, ok := errors.AsType[*profile.UserUnavailableError](err); ok {
-			http.Error(w, unavailable.Error(), http.StatusForbidden)
-			return
-		}
-		http.Error(w, fmt.Sprintf("failed to fetch user groups: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to read user groups: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if groups == nil {
-		groups = state.GroupInfoList{}
-	}
-
-	if err := json.NewEncoder(w).Encode(groups); err != nil {
+	if err := json.NewEncoder(w).Encode(infos); err != nil {
 		http.Error(w, fmt.Sprintf("failed to encode groups: %v", err), http.StatusInternalServerError)
 		return
 	}

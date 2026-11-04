@@ -1,4 +1,4 @@
-// Package client discovers an authentik OAuth2/OpenID provider and reads authentik's API.
+// Package client discovers an authentik OAuth2/OpenID provider.
 package client
 
 import (
@@ -26,15 +26,6 @@ const (
 type Endpoints struct {
 	Issuer      string `json:"issuer"`
 	UserInfoURL string `json:"userinfo_endpoint"`
-	// APIURL is authentik's API base, such as https://auth.example.com/api/v3.
-	APIURL string `json:"-"`
-}
-
-// Client performs read-only authentik API requests with a service account's API token.
-type Client struct {
-	apiURL     string
-	token      string
-	httpClient *http.Client
 }
 
 // CanonicalIssuer checks that raw is the issuer of an authentik provider and returns it with the
@@ -103,8 +94,6 @@ func Discover(ctx context.Context, issuer string, httpClient *http.Client) (Endp
 	if err != nil || u.Scheme != origin.Scheme || u.Host != origin.Host || u.User != nil || u.Fragment != "" {
 		return Endpoints{}, errors.New("discovered userinfo endpoint must use the issuer origin")
 	}
-	prefix, _, _ := strings.CutLast(origin.EscapedPath(), issuerPathMarker)
-	endpoints.APIURL = origin.Scheme + "://" + origin.Host + prefix + "/api/v3"
 	return endpoints, nil
 }
 
@@ -116,7 +105,7 @@ func transport(c *http.Client) *http.Client {
 		c = &http.Client{Timeout: 15 * time.Second, Transport: apiTransport}
 	}
 	cloned := *c
-	// Every URL is known in advance. Never replay the API token to a redirect target.
+	// Every URL is known in advance, so redirects are never followed.
 	cloned.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	return &cloned
 }
@@ -131,26 +120,4 @@ func Decode(reader io.Reader, out any) error {
 		return errors.New("authentik response exceeds size limit")
 	}
 	return json.Unmarshal(data, out)
-}
-
-func New(apiURL, token string, httpClient *http.Client) *Client {
-	return &Client{apiURL: strings.TrimSuffix(apiURL, "/"), token: token, httpClient: transport(httpClient)}
-}
-
-// APIURL returns the API base URL that directory reads use.
-func (c *Client) APIURL() string { return c.apiURL }
-
-// Get reads path, relative to the API base, such as /core/users/.
-func (c *Client) Get(ctx context.Context, path string, query url.Values) (*http.Response, error) {
-	endpoint := c.apiURL + path
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Accept", "application/json")
-	return c.httpClient.Do(req)
 }
