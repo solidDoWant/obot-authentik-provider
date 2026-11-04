@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "docker:pinDigests", "helpers:pinGitHubActionDigests"],
+  "postUpdateOptions": ["gomodTidy"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images that e2e/run.sh starts",
+      "managerFilePatterns": ["/^e2e/run\\.sh$/"],
+      "matchStrings": ["# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\S+=\\S+?:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"]
+    }
+  ]
+}

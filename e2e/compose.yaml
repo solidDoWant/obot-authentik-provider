@@ -1,0 +1,41 @@
+# The throwaway authentik for the end-to-end test. run.sh starts obot itself, because Compose
+# can't mount an image from Docker's containerd image store.
+name: obot-authentik-e2e
+
+x-authentik-env: &authentik-env
+  AUTHENTIK_SECRET_KEY: e2e-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
+  AUTHENTIK_POSTGRESQL__HOST: postgresql
+  AUTHENTIK_POSTGRESQL__USER: authentik
+  AUTHENTIK_POSTGRESQL__NAME: authentik
+  AUTHENTIK_POSTGRESQL__PASSWORD: e2e-db-password
+  AUTHENTIK_BOOTSTRAP_PASSWORD: e2e-admin-password
+  AUTHENTIK_BOOTSTRAP_TOKEN: e2e-bootstrap-token
+  AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@example.com
+  AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+
+services:
+  postgresql:
+    image: docker.io/library/postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_PASSWORD: e2e-db-password
+      POSTGRES_USER: authentik
+      POSTGRES_DB: authentik
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 2s
+      retries: 30
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
+    command: server
+    environment: *authentik-env
+    ports: ["127.0.0.1:9000:9000"]
+    depends_on:
+      postgresql: {condition: service_healthy}
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.8.5@sha256:602227a86455d6772e3d16b7d852713c4f864f40df5df894abd1285bb53979a5
+    command: worker
+    environment: *authentik-env
+    depends_on:
+      postgresql: {condition: service_healthy}

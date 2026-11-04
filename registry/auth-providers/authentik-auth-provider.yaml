@@ -1,0 +1,68 @@
+# Provider manifest that obot reads from this registry. obot resolves "command" relative to the
+# registry root, which is the root of the image.
+name: "authentik"
+command: "authentik-auth-provider/bin/obot-provider"
+icon: "https://cdn.jsdelivr.net/npm/simple-icons@v13/icons/authentik.svg"
+description: "Authenticate with authentik and use its groups for Obot access."
+link: "https://goauthentik.io/"
+requiredConfigurationParameters:
+  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_ISSUER_URL"
+    friendlyName: "Issuer URL"
+    description: "OpenID Configuration Issuer of the authentik provider, for example https://auth.example.com/application/o/obot/."
+    sensitive: false
+  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_ID"
+    friendlyName: "Client ID"
+    description: "Client ID of the authentik OAuth2/OpenID provider used to sign in to Obot."
+    sensitive: false
+  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_CLIENT_SECRET"
+    friendlyName: "Client Secret"
+    description: "Client secret of the authentik OAuth2/OpenID provider."
+    sensitive: true
+  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_API_TOKEN"
+    friendlyName: "API Token"
+    description: "API token of an authentik service account that can view users and groups."
+    sensitive: true
+  - name: "OBOT_AUTH_PROVIDER_COOKIE_SECRET"
+    friendlyName: "Cookie Secret"
+    description: "Secret used to encrypt cookies. Must be a random string of length 16, 24, or 32."
+    sensitive: true
+    hidden: true
+  - name: "OBOT_AUTH_PROVIDER_EMAIL_DOMAINS"
+    friendlyName: "Allowed E-Mail Domains"
+    description: "A list of email domains that are allowed to authenticate with this provider. * is a special value that allows all domains."
+    sensitive: false
+optionalConfigurationParameters:
+  - name: "OBOT_AUTH_PROVIDER_ENABLE_LOGGING"
+    friendlyName: "Enable Logging"
+    description: "Set to true to enable request, auth, and standard logging for the auth provider. Default: false"
+    sensitive: false
+  - name: "OBOT_AUTHENTIK_AUTH_PROVIDER_INSECURE_ALLOW_UNVERIFIED_EMAIL"
+    friendlyName: "Allow Unverified Emails"
+    description: "Set to true to let users sign in even if authentik doesn't report their email addresses as verified. Default: false"
+    sensitive: false
+  - name: "OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_DSN"
+    friendlyName: "PostgreSQL connection string (DSN)"
+    description: "The connection string for a PostgreSQL database to use for session storage. If unset, cookies will be used for session storage instead."
+    sensitive: true
+    hidden: true
+  - name: "OBOT_AUTH_PROVIDER_POSTGRES_MAX_CONNECTIONS"
+    friendlyName: "PostgreSQL max open connections"
+    description: "The maximum number of open connections to the PostgreSQL database."
+    sensitive: false
+    hidden: true
+  - name: "OBOT_AUTH_PROVIDER_POSTGRES_MAX_IDLE_CONNECTIONS"
+    friendlyName: "PostgreSQL max idle connections"
+    description: "The maximum number of idle connections to the PostgreSQL database."
+    sensitive: false
+    hidden: true
+  - name: "OBOT_AUTH_PROVIDER_POSTGRES_CONNECTION_LIFETIME_SECONDS"
+    friendlyName: "PostgreSQL connection lifetime"
+    description: "The maximum lifetime of a PostgreSQL database connection, in seconds."
+    sensitive: false
+    hidden: true
+  - name: "OBOT_AUTH_PROVIDER_TOKEN_REFRESH_DURATION"
+    friendlyName: "Token Refresh Duration"
+    description: "Time to wait before attempting to refresh auth tokens. Should be in a format like 1h1m1s. Default: 1h"
+    sensitive: false
+postgresTablePrefix: "authentik_"
+groupIDPrefix: "authentik/"
