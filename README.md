@@ -51,7 +51,7 @@ spec:
         patches:
           - target:
               kind: Deployment
-              name: obot # The Helm release name.
+              labelSelector: app.kubernetes.io/name=obot,app.kubernetes.io/component=gateway
             patch: |
               - op: add
                 path: /spec/template/spec/containers/0/command
@@ -69,7 +69,8 @@ patch it with Kustomize.
 
 The container's root filesystem must be writable, which is the chart's default.
 
-To check the install, look for this line in the Obot log:
+To check the install, look for this line in the Obot log. Obot loads registries about a minute
+after it starts.
 
 ```text
 "message":"Loaded provider registry","registry":"/obot-providers/authentik","providers":1
