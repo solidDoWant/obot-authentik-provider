@@ -40,7 +40,7 @@ spec:
     extraVolumes:
       - name: authentik-provider
         image:
-          reference: ghcr.io/soliddowant/obot-authentik-provider:v0.1.0
+          reference: ghcr.io/soliddowant/obot-authentik-provider:0.1.0
           pullPolicy: IfNotPresent
     extraVolumeMounts:
       - name: authentik-provider
