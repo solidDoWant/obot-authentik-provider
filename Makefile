@@ -8,6 +8,7 @@ build:
 	mkdir -p build/registry
 	cp -r registry/. build/registry/
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o build/registry/authentik-auth-provider/bin/obot-provider .
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o build/registry/start-obot ./cmd/start-obot
 
 test:
 	go test -race -cover ./...

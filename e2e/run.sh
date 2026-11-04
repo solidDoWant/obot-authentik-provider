@@ -66,18 +66,16 @@ wait_for authentik "$AK/core/users/me/" -H "$AK_ADMIN"
 # shellcheck source=/dev/null
 source "$E2E_DIR/env"
 
-# This is the README's Kubernetes install: the registry is an image volume, and a line added to
-# the registry list that run.sh loads. The host network lets obot and the test client reach
-# authentik at the same issuer URL. obot needs a Docker API for MCP servers, or it won't start.
+# This is the README's Kubernetes install: the registry is an image volume, and its start-obot is
+# the entrypoint. The host network lets obot and the test client reach authentik at the same
+# issuer URL. obot needs a Docker API for MCP servers, or it won't start.
 docker rm -f "$OBOT_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$OBOT_CONTAINER" --network host \
     -e OBOT_SERVER_ENABLE_AUTHENTICATION=true -e OBOT_BOOTSTRAP_TOKEN=e2e-obot-bootstrap \
     -e OBOT_SERVER_HOSTNAME="$OBOT" \
     --mount "type=image,source=$PROVIDER_IMAGE,target=/obot-providers/authentik" \
     -v /var/run/docker.sock:/var/run/docker.sock \
-    --entrypoint /bin/sh "$OBOT_IMAGE" -c \
-    'echo '"'"'export OBOT_SERVER_PROVIDER_REGISTRIES="${OBOT_SERVER_PROVIDER_REGISTRIES},/obot-providers/authentik"'"'"' >> /obot-providers/.envrc.providers && exec run.sh' \
-    >/dev/null
+    --entrypoint /obot-providers/authentik/start-obot "$OBOT_IMAGE" >/dev/null
 wait_for obot "$OBOT/api/healthz"
 wait_for "the provider registry" "$OBOT/api/auth-providers/authentik-auth-provider" -H "$BOOTSTRAP"
 

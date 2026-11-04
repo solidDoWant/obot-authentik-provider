@@ -25,10 +25,10 @@ rebuild Obot.
 
 Two changes to the Obot deployment are needed:
 
-1. Mount the image at `/obot-providers/authentik`.
-2. Add that directory to the provider registries. Obot's image sets the list of registries when it
-   starts, from `/obot-providers/.envrc.providers`, so an environment variable doesn't work. The
-   container command adds a line to that file and then starts Obot as usual.
+1. Mount the image, for example at `/obot-providers/authentik`.
+2. Set the container command to `start-obot`, from the image. It adds the directory it's in to
+   the provider registries that Obot loads, then starts Obot as usual. Obot's image sets the
+   registries itself when it starts, so an environment variable doesn't work.
 
 With the [Obot Helm chart](https://charts.obot.ai), the mount goes in the chart values. The chart
 can't change the container command, so a post-renderer patches it. For example, with a Flux
@@ -40,7 +40,7 @@ spec:
     extraVolumes:
       - name: authentik-provider
         image:
-          reference: ghcr.io/soliddowant/obot-authentik-provider:0.1.0
+          reference: ghcr.io/soliddowant/obot-authentik-provider:0.2.0
           pullPolicy: IfNotPresent
     extraVolumeMounts:
       - name: authentik-provider
@@ -55,19 +55,19 @@ spec:
             patch: |
               - op: add
                 path: /spec/template/spec/containers/0/command
-                value: [/bin/sh, -c]
-              - op: add
-                path: /spec/template/spec/containers/0/args
-                value:
-                  - |
-                    echo 'export OBOT_SERVER_PROVIDER_REGISTRIES="${OBOT_SERVER_PROVIDER_REGISTRIES},/obot-providers/authentik"' >> /obot-providers/.envrc.providers
-                    exec run.sh
+                value: [/obot-providers/authentik/start-obot]
 ```
 
 With plain Helm, apply the same patch with `helm install --post-renderer`, or render the chart and
 patch it with Kustomize.
 
-The container's root filesystem must be writable, which is the chart's default.
+The container's root filesystem must be writable, which is the chart's default: `start-obot` adds
+a line to `/obot-providers/.envrc.providers`, which Obot's image reads when it starts. If the file
+isn't there, `start-obot` stops with an error rather than starting Obot without the provider.
+
+To run more than one provider image this way, give `start-obot` the next one's `start-obot` as
+arguments, for example `[/obot-providers/authentik/start-obot, /obot-providers/other/start-obot]`.
+`start-obot` runs its arguments in place of Obot's usual startup.
 
 To check the install, look for this line in the Obot log. Obot loads registries about a minute
 after it starts.
@@ -155,6 +155,12 @@ authentik there.
 
 If sign-in fails, the reason is in the Obot log, in lines that start with
 `authentik-auth-provider`.
+
+## Upgrade from 0.1.0
+
+0.1.0 had a two-part container patch: a `/bin/sh -c` command and an `args` script that edited
+`/obot-providers/.envrc.providers`. Replace both with the one `command` above, and remove the
+`args`.
 
 ## Limitations
 
